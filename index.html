@@ -147,6 +147,8 @@
         
         // Sensor variables
         let baseHeading = null;
+        let targetHeading = null;
+        let targetPitch = null;
 
         // 1. App Trigger Event
         startBtn.addEventListener('click', async () => {
@@ -159,6 +161,13 @@
                 uiContainer.style.display = 'flex';
                 
                 initThreeJS();
+                // Set target heading as current position when app initializes
+                setTimeout(() => {
+                    if (baseHeading !== null) {
+                        targetHeading = baseHeading;
+                        targetPitch = 0; // Assume level horizon as target
+                    }
+                }, 500);
                 animate();
                 
                 // Trigger light haptic confirmation via Telegram
@@ -196,7 +205,7 @@
                 try {
                     const permissionState = await DeviceOrientationEvent.requestPermission();
                     if (permissionState === 'granted') {
-                        window.addEventListener('deviceorientation', handleOrientation, true);
+                        window.addEventListener('deviceorientation', handleOrientation);
                         return true;
                     }
                 } catch (error) {
@@ -205,27 +214,51 @@
                 }
             } else {
                 // Android/Desktop fallback
-                window.addEventListener('deviceorientation', handleOrientation, true);
+                window.addEventListener('deviceorientation', handleOrientation);
                 return true;
             }
         }
 
         // 4. Update Three.js Camera Rotation based on Gyro data
         function handleOrientation(event) {
-            if (!camera) return;
+            if (!camera || !scene) return;
 
             // alpha = rotation around z axis (0 to 360) - basically compass heading
             // beta = front-back tilt (-180 to 180)
             // gamma = left-right tilt (-90 to 90)
-            let alpha = event.alpha ? THREE.MathUtils.degToRad(event.alpha) : 0;
-            let beta = event.beta ? THREE.MathUtils.degToRad(event.beta) : 0;
-            let gamma = event.gamma ? THREE.MathUtils.degToRad(event.gamma) : 0;
-
-            // Simple device orientation assignment mapping to virtual camera
-            // For complex mathematical robustness, look into Euler angles or Quaternions
-            camera.rotation.set(beta, gamma, -alpha, 'YXZ');
+            let alpha = event.alpha ? event.alpha : 0;
+            let beta = event.beta ? event.beta : 0;
+            let gamma = event.gamma ? event.gamma : 0;
             
-            telemetryText.innerText = `AZIMUTH: ${Math.round(event.alpha || 0)}° | TILT: ${Math.round(event.beta || 0)}°`;
+            baseHeading = alpha; // Store for reference
+
+            // Convert to radians for Three.js
+            let alphaRad = THREE.MathUtils.degToRad(alpha);
+            let betaRad = THREE.MathUtils.degToRad(beta);
+            let gammaRad = THREE.MathUtils.degToRad(gamma);
+
+            // Update camera rotation using YXZ Euler order for better stability
+            camera.rotation.set(betaRad, gammaRad, -alphaRad, 'YXZ');
+            
+            // Calculate dead drop position based on target heading difference
+            if (deadDropMesh && targetHeading !== null) {
+                let headingDiff = (alpha - targetHeading + 180) % 360 - 180; // Normalize to -180 to 180
+                let pitchDiff = beta - targetPitch;
+                
+                // Convert heading difference to radians
+                let headingRad = THREE.MathUtils.degToRad(headingDiff);
+                let pitchRad = THREE.MathUtils.degToRad(pitchDiff);
+                
+                // Position dead drop at distance with offset based on heading/pitch
+                let distance = 8;
+                let xOffset = Math.sin(headingRad) * distance * Math.cos(pitchRad);
+                let yOffset = -Math.sin(pitchRad) * distance;
+                let zOffset = -Math.cos(headingRad) * distance * Math.cos(pitchRad);
+                
+                deadDropMesh.position.set(xOffset, yOffset, zOffset);
+            }
+            
+            telemetryText.innerText = `AZIMUTH: ${Math.round(alpha)}° | TILT: ${Math.round(beta)}°`;
         }
 
         // 5. Build ThreeJS Environment
