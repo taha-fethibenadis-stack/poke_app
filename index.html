@@ -28,6 +28,8 @@
             z-index: 1;
             display: block;
             background: #000;
+            opacity: 1;
+            visibility: visible;
         }
 
         /* Three.js Canvas Overlay */
@@ -39,6 +41,12 @@
             height: 100%;
             z-index: 2;
             pointer-events: none; /* Allows tapping through to UI if needed */
+        }
+        
+        #ar-canvas canvas {
+            display: block;
+            background: transparent !important;
+            opacity: 1;
         }
 
         /* Cyberpunk UI Overlay */
@@ -185,26 +193,36 @@
         // 2. Camera Stream Setup
         async function initCamera() {
             try {
-                console.log("Requesting camera access...");
+                console.log("Requesting camera access (back camera preferred)...");
+                // Try back camera without exact constraint first
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { exact: "environment" } } // Force back camera
+                    video: { facingMode: "environment" } // Prefer back camera, but allow fallback
                 });
                 videoElement.srcObject = stream;
+                
+                // Get track info to show which camera is being used
+                const track = stream.getVideoTracks()[0];
+                const settings = track.getSettings();
+                console.log("Camera stream obtained - facing:", settings.facingMode || "unknown");
                 
                 // Add a small delay to ensure video loads
                 return new Promise((resolve) => {
                     setTimeout(() => {
-                        console.log("Camera initialized (back camera), video readyState:", videoElement.readyState);
+                        console.log("Camera initialized, video readyState:", videoElement.readyState, "videoWidth:", videoElement.videoWidth, "videoHeight:", videoElement.videoHeight);
                         resolve(true);
                     }, 500);
                 });
             } catch (err) {
-                console.warn("Back camera not available, trying any camera", err);
-                // Fallback to any available camera if 'environment' configuration fails
+                console.warn("Camera request failed, trying any camera", err);
+                // Fallback to any available camera
                 try {
-                    const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    const fallbackStream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { width: { min: 320 }, height: { min: 240 } }
+                    });
                     videoElement.srcObject = fallbackStream;
-                    console.log("Camera initialized (fallback camera)");
+                    const track = fallbackStream.getVideoTracks()[0];
+                    const settings = track.getSettings();
+                    console.log("Fallback camera initialized - facing:", settings.facingMode || "unknown");
                     return true;
                 } catch (fallbackErr) {
                     console.error("Camera error:", fallbackErr);
