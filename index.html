@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR Dead Drop</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        /* Camera background feed */
+        #camera-feed {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+        }
+
+        /* Three.js Canvas Overlay */
+        #ar-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none; /* Allows tapping through to UI if needed */
+        }
+
+        /* Cyberpunk UI Overlay */
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 3;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            box-sizing: border-box;
+            padding: 20px;
+        }
+
+        .hud-panel {
+            background: rgba(0, 20, 10, 0.75);
+            border: 2px solid #00ff66;
+            color: #00ff66;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            text-shadow: 0 0 5px #00ff66;
+            box-shadow: 0 0 15px rgba(0, 255, 102, 0.2);
+            text-align: center;
+        }
+
+        #intro-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #0d0d0d;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #00ff66;
+            font-family: monospace;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .btn {
+            background: transparent;
+            border: 2px solid #00ff66;
+            color: #00ff66;
+            padding: 15px 30px;
+            font-size: 16px;
+            font-family: monospace;
+            cursor: pointer;
+            margin-top: 20px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            box-shadow: 0 0 10px rgba(0, 255, 102, 0.3);
+            transition: all 0.3s ease;
+        }
+
+        .btn:active {
+            background: #00ff66;
+            color: #000;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="intro-screen">
+        <h2>SPATIAL DEAD DROP V1.0</h2>
+        <p style="text-align: center; max-width: 300px;">Initialize system to sync matrix camera feed and telemetry sensors.</p>
+        <button class="btn" id="start-btn">Initialize AR</button>
+    </div>
+
+    <video id="camera-feed" autoplay playsinline muted></video>
+
+    <div id="ar-canvas"></div>
+
+    <div id="ui-container" style="display: none;">
+        <div class="hud-panel" id="top-hud">
+            SYSTEM: ACTIVE<br>
+            LOOK AROUND TO LOCATE DROP
+        </div>
+        
+        <div class="hud-panel" id="bottom-hud">
+            LATENCY: OPTIMAL<br>
+            <span id="telemetry">ALPHA RECEPTOR: WAITING...</span>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Telegram Web App
+        const tg = window.Telegram.WebApp;
+        tg.expand(); // Make mini-app full screen
+
+        // Elements
+        const startBtn = document.getElementById('start-btn');
+        const introScreen = document.getElementById('intro-screen');
+        const uiContainer = document.getElementById('ui-container');
+        const videoElement = document.getElementById('camera-feed');
+        const telemetryText = document.getElementById('telemetry');
+
+        // Three.js Variables
+        let scene, camera, renderer, deadDropMesh;
+        
+        // Sensor variables
+        let baseHeading = null;
+
+        // 1. App Trigger Event
+        startBtn.addEventListener('click', async () => {
+            // Request Camera & Orientation Permissions via User Gesture
+            const cameraAllowed = await initCamera();
+            const sensorsAllowed = await initSensors();
+
+            if (cameraAllowed) {
+                introScreen.style.display = 'none';
+                uiContainer.style.display = 'flex';
+                
+                initThreeJS();
+                animate();
+                
+                // Trigger light haptic confirmation via Telegram
+                if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+            } else {
+                alert("Camera access is critical for Spatial AR tracking.");
+            }
+        });
+
+        // 2. Camera Stream Setup
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { exact: "environment" } } // Force back camera
+                });
+                videoElement.srcObject = stream;
+                return true;
+            } catch (err) {
+                // Fallback to any available camera if 'environment' configuration fails
+                try {
+                    const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    videoElement.srcObject = fallbackStream;
+                    return true;
+                } catch (fallbackErr) {
+                    console.error("Camera error:", fallbackErr);
+                    return false;
+                }
+            }
+        }
+
+        // 3. Gyroscope and Device Orientation Hook
+        async function initSensors() {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                // iOS 13+ Device Orientation permission prompt
+                try {
+                    const permissionState = await DeviceOrientationEvent.requestPermission();
+                    if (permissionState === 'granted') {
+                        window.addEventListener('deviceorientation', handleOrientation, true);
+                        return true;
+                    }
+                } catch (error) {
+                    console.error("Orientation permissions denied", error);
+                    return false;
+                }
+            } else {
+                // Android/Desktop fallback
+                window.addEventListener('deviceorientation', handleOrientation, true);
+                return true;
+            }
+        }
+
+        // 4. Update Three.js Camera Rotation based on Gyro data
+        function handleOrientation(event) {
+            if (!camera) return;
+
+            // alpha = rotation around z axis (0 to 360) - basically compass heading
+            // beta = front-back tilt (-180 to 180)
+            // gamma = left-right tilt (-90 to 90)
+            let alpha = event.alpha ? THREE.MathUtils.degToRad(event.alpha) : 0;
+            let beta = event.beta ? THREE.MathUtils.degToRad(event.beta) : 0;
+            let gamma = event.gamma ? THREE.MathUtils.degToRad(event.gamma) : 0;
+
+            // Simple device orientation assignment mapping to virtual camera
+            // For complex mathematical robustness, look into Euler angles or Quaternions
+            camera.rotation.set(beta, gamma, -alpha, 'YXZ');
+            
+            telemetryText.innerText = `AZIMUTH: ${Math.round(event.alpha || 0)}° | TILT: ${Math.round(event.beta || 0)}°`;
+        }
+
+        // 5. Build ThreeJS Environment
+        function initThreeJS() {
+            const container = document.getElementById('ar-canvas');
+
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // Critical setup detail: alpha true removes the default gray background
+            renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            // Create Cyberpunk Dead Drop Box Geometry
+            const geometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+            // Wireframe mesh keeps the cyberpunk digital HUD look intact
+            const material = new THREE.MeshBasicMaterial({ 
+                color: 0x00ff66, 
+                wireframe: true 
+            });
+            
+            deadDropMesh = new THREE.Mesh(geometry, material);
+            
+            // Place the dead drop object right in front of the origin point
+            // Adjust coordinates based on target destination vectors
+            deadDropMesh.position.set(0, 0, -8); 
+            scene.add(deadDropMesh);
+
+            // Handle display window adjustments seamlessly
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // 6. Animation Engine Frame Loops
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Gently spin the digital container item in midair
+            if (deadDropMesh) {
+                deadDropMesh.rotation.x += 0.01;
+                deadDropMesh.rotation.y += 0.01;
+            }
+
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
