@@ -26,6 +26,8 @@
             height: 100%;
             object-fit: cover;
             z-index: 1;
+            display: block;
+            background: #000;
         }
 
         /* Three.js Canvas Overlay */
@@ -114,7 +116,10 @@
         <button class="btn" id="start-btn">Initialize AR</button>
     </div>
 
-    <video id="camera-feed" autoplay playsinline muted></video>
+    <video id="camera-feed" autoplay playsinline muted
+           onloadstart="console.log('Video stream starting')"
+           onplay="console.log('Video playing')"
+           onerror="console.error('Video error:', event)"></video>
 
     <div id="ar-canvas"></div>
 
@@ -184,15 +189,19 @@
                     video: { facingMode: { exact: "environment" } } // Force back camera
                 });
                 videoElement.srcObject = stream;
+                console.log("Camera initialized (back camera)");
                 return true;
             } catch (err) {
+                console.warn("Back camera not available, trying any camera", err);
                 // Fallback to any available camera if 'environment' configuration fails
                 try {
                     const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
                     videoElement.srcObject = fallbackStream;
+                    console.log("Camera initialized (fallback camera)");
                     return true;
                 } catch (fallbackErr) {
                     console.error("Camera error:", fallbackErr);
+                    telemetryText.innerText = "ERROR: Camera access denied";
                     return false;
                 }
             }
@@ -206,6 +215,7 @@
                     const permissionState = await DeviceOrientationEvent.requestPermission();
                     if (permissionState === 'granted') {
                         window.addEventListener('deviceorientation', handleOrientation);
+                        console.log("Orientation sensors enabled (iOS)");
                         return true;
                     }
                 } catch (error) {
@@ -215,6 +225,7 @@
             } else {
                 // Android/Desktop fallback
                 window.addEventListener('deviceorientation', handleOrientation);
+                console.log("Orientation sensors enabled (Android/Desktop)");
                 return true;
             }
         }
@@ -240,6 +251,13 @@
             // Update camera rotation using YXZ Euler order for better stability
             camera.rotation.set(betaRad, gammaRad, -alphaRad, 'YXZ');
             
+            // Set initial target heading on first orientation event
+            if (targetHeading === null && targetPitch === null) {
+                targetHeading = alpha;
+                targetPitch = beta;
+                console.log("Target locked at:", targetHeading, targetPitch);
+            }
+            
             // Calculate dead drop position based on target heading difference
             if (deadDropMesh && targetHeading !== null) {
                 let headingDiff = (alpha - targetHeading + 180) % 360 - 180; // Normalize to -180 to 180
@@ -258,7 +276,7 @@
                 deadDropMesh.position.set(xOffset, yOffset, zOffset);
             }
             
-            telemetryText.innerText = `AZIMUTH: ${Math.round(alpha)}° | TILT: ${Math.round(beta)}°`;
+            telemetryText.innerText = `AZIMUTH: ${Math.round(alpha)}° | TILT: ${Math.round(beta)}° | X: ${Math.round(deadDropMesh?.position.x || 0)}`;
         }
 
         // 5. Build ThreeJS Environment
@@ -272,7 +290,15 @@
             renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setClearColor(0x000000, 0); // Fully transparent background
+            
+            // Ensure the canvas is transparent and positioned correctly
+            renderer.domElement.style.position = 'absolute';
+            renderer.domElement.style.top = '0';
+            renderer.domElement.style.left = '0';
+            
             container.appendChild(renderer.domElement);
+            console.log("Three.js renderer initialized");
 
             // Create Cyberpunk Dead Drop Box Geometry
             const geometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
